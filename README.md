@@ -124,8 +124,15 @@ MIDNIGHT_HOST=127.0.0.1 yarn dust "<bartender mnemonic>"
 
 ## Deploy Contract
 
+Use one wallet mnemonic that already has:
+- NIGHT balance (funded)
+- DUST balance (registered and non-zero)
+
+You can use either role wallet, but typically use the **client wallet mnemonic**.
+
 ```bash
 MIDNIGHT_HOST=127.0.0.1 yarn deploy "<mnemonic>"
+MIDNIGHT_HOST=127.0.0.1 yarn deploy "<client mnemonic>"
 ```
 
 Run deploy from this repo root (`/Users/dawidurbas/Main/mf2`).
