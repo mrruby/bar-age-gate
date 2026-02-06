@@ -1,4 +1,8 @@
 node_modules
+dist
+midnight-level-db
+contracts/managed
+deployment.json
 .idea
 .yarn
 .DS_Store

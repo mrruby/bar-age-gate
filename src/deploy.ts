@@ -1,178 +1,213 @@
-// Copyright 2025 Shagun Prasad
-// SPDX-License-Identifier: Apache-2.0
-// Deploy Hello World contract using the same wallet as Lace (mnemonic → same address).
-// Run from repo root: yarn deploy "your mnemonic words"
-
 import * as bip39 from 'bip39';
 import * as rx from 'rxjs';
 import * as path from 'path';
 import { pathToFileURL } from 'node:url';
 import * as fs from 'fs';
-import * as ledger from '@midnight-ntwrk/ledger-v6';
-import { initWalletWithSeed } from './utils';
+import * as ledger from '@midnight-ntwrk/ledger-v7';
 import { MidnightBech32m } from '@midnight-ntwrk/wallet-sdk-address-format';
 import { createConstructorContext } from '@midnight-ntwrk/compact-runtime';
+import { initWalletWithSeed } from './utils';
 
-const SHIELDED_NATIVE_RAW = ledger.shieldedToken().raw;
-const NETWORK_ID = 'undeployed';
+const HOST = process.env['MIDNIGHT_HOST'] ?? '127.0.0.1';
+const INDEXER_PORT = Number.parseInt(process.env['INDEXER_PORT'] ?? '8088', 10);
+const INDEXER_HTTP_URL = `http://${HOST}:${INDEXER_PORT}/api/v3/graphql`;
+const WAIT_FUNDS_MS = 90_000;
+const WAIT_DUST_MS = 10 * 60_000;
+const POLL_MS = 3_000;
 const TTL_MS = 30 * 60 * 1000;
-const WAIT_FOR_FUNDS_MS = 90_000;
-const WAIT_POLL_MS = 3_000;
+const CHAIN_SAFETY_MS = Number.parseInt(process.env['CHAIN_TIME_SAFETY_MS'] ?? '30000', 10);
+const MANAGED_CONTRACT_DIR = path.join(
+  process.cwd(),
+  'contracts',
+  'managed',
+  'bar-age-gate'
+);
 
-async function main(): Promise<void> {
-    const mnemonic = process.argv.slice(2).join(' ').trim();
-    if (!mnemonic || !bip39.validateMnemonic(mnemonic)) {
-        console.error('Usage: yarn deploy "your twelve or twenty four mnemonic words"');
-        process.exit(2);
-    }
+const BLOCK_TIME_QUERY = `query BlockTime { block { timestamp } }`;
 
-    const seed = bip39.mnemonicToSeedSync(mnemonic).subarray(0, 32);
-    console.log('Building wallet (same derivation as Lace)...');
-    const { wallet, shieldedSecretKeys, dustSecretKey, unshieldedKeystore } = await initWalletWithSeed(seed);
-    await wallet.start(shieldedSecretKeys, dustSecretKey);
-
-    await rx.firstValueFrom(wallet.state().pipe(rx.filter((s) => s.isSynced)));
-    let state = await rx.firstValueFrom(wallet.state());
-    const shieldedAddress = MidnightBech32m.encode('undeployed', state.shielded.address).toString();
-    console.log('Your wallet address (Lace match):', shieldedAddress);
-
-    let balance = state.shielded.balances[SHIELDED_NATIVE_RAW] ?? 0n;
-    if (balance === 0n) {
-        console.log('Balance is 0. Waiting for funds (e.g. after yarn fund)…');
-        const deadline = Date.now() + WAIT_FOR_FUNDS_MS;
-        while (balance === 0n && Date.now() < deadline) {
-            await new Promise((r) => setTimeout(r, WAIT_POLL_MS));
-            state = await rx.firstValueFrom(wallet.state());
-            balance = state.shielded.balances[SHIELDED_NATIVE_RAW] ?? 0n;
-        }
-    }
-    if (balance === 0n) {
-        console.error('Balance is still 0. Fund this address from repo root: yarn fund "' + mnemonic + '"');
-        await wallet.stop();
-        process.exit(1);
-    }
-    console.log('Balance:', balance.toString());
-
-    const dappDir = path.join(process.cwd(), 'midnight-local-dapp');
-    const contractPath = path.join(dappDir, 'contracts', 'managed', 'hello-world', 'contract', 'index.js');
-    const verifierKeyPath = path.join(dappDir, 'contracts', 'managed', 'hello-world', 'keys', 'storeMessage.verifier');
-    if (!fs.existsSync(contractPath)) {
-        console.error('Contract not found at', contractPath);
-        await wallet.stop();
-        process.exit(1);
-    }
-    if (!fs.existsSync(verifierKeyPath)) {
-        console.error('Verifier key not found at', verifierKeyPath);
-        await wallet.stop();
-        process.exit(1);
-    }
-    // ledger-v6 WASM expects verifier key with header 'midnight:verifier-key[v4]:';
-    // the contract build may emit v6. Rewrite v6 -> v4 so the setter accepts it.
-    const V6_HEADER = new TextEncoder().encode('midnight:verifier-key[v6]:');
-    const V4_HEADER = new TextEncoder().encode('midnight:verifier-key[v4]:');
-    let verifierKeyBytes = new Uint8Array(fs.readFileSync(verifierKeyPath));
-    if (
-        verifierKeyBytes.length >= V6_HEADER.length &&
-        V6_HEADER.every((b, i) => verifierKeyBytes[i] === b)
-    ) {
-        verifierKeyBytes = verifierKeyBytes.slice(0);
-        verifierKeyBytes.set(V4_HEADER.subarray(0, V4_HEADER.length), 0);
-    }
-
-    console.log('Loading contract...');
-    const ContractModule = await import(pathToFileURL(contractPath).href);
-    const ContractClass = ContractModule.Contract;
-    const contractInstance = new ContractClass({});
-
-    const coinPublicKeyHex = state.shielded.coinPublicKey.toHexString();
-    const constructorContext = createConstructorContext({}, coinPublicKeyHex);
-    const constructorResult = contractInstance.initialState(constructorContext);
-
-    // ledger-v6 expects its own ContractState instance. Use the contract's state value
-    // via encode/decode (EncodedStateValue may be shared) and copy the operation.
-    const cs = constructorResult.currentContractState as {
+type ContractModule = {
+  Contract: new (...args: unknown[]) => {
+    initialState: (context: unknown) => {
+      currentContractState: {
         data: { state: { encode: () => ledger.EncodedStateValue } };
         operation: (name: string) => { serialize: () => Uint8Array } | undefined;
+      };
     };
-    const ledgerState = new ledger.ContractState();
+  };
+};
+
+const fetchChainTime = async (): Promise<Date> => {
+  const res = await fetch(INDEXER_HTTP_URL, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ query: BLOCK_TIME_QUERY }),
+  });
+  if (!res.ok) throw new Error(`Indexer request failed (${res.status})`);
+  const json = (await res.json()) as {
+    data?: { block?: { timestamp?: number } };
+    errors?: Array<{ message: string }>;
+  };
+  if (json.errors?.length) throw new Error(json.errors.map((e) => e.message).join('; '));
+  const ts = json.data?.block?.timestamp;
+  if (!ts) throw new Error('Missing block timestamp');
+  return new Date(Math.max(0, ts - CHAIN_SAFETY_MS));
+};
+
+const getTtl = async (): Promise<Date> => {
+  try {
+    const chainNow = await fetchChainTime();
+    return new Date(chainNow.getTime() + TTL_MS);
+  } catch {
+    return new Date(Date.now() + TTL_MS);
+  }
+};
+
+const deployWitnesses = {
+  storeAge: (context: { privateState?: { agesByClientId?: Record<string, unknown> } }) => [
+    context.privateState ?? { agesByClientId: {} },
+    [],
+  ],
+  loadAge: () => {
+    throw new Error('loadAge witness is not available during deployment');
+  },
+};
+
+const waitSynced = async (
+  wallet: Awaited<ReturnType<typeof initWalletWithSeed>>['wallet']
+) => rx.firstValueFrom(wallet.state().pipe(rx.filter((s) => s.isSynced)));
+
+const loadVerifierEntries = (): Array<{ circuitName: string; verifierKey: Uint8Array }> => {
+  const keysDir = path.join(MANAGED_CONTRACT_DIR, 'keys');
+  if (!fs.existsSync(keysDir)) {
+    throw new Error('Missing contract keys directory. Run yarn compile.');
+  }
+
+  const verifierFiles = fs
+    .readdirSync(keysDir)
+    .filter((file) => file.endsWith('.verifier'))
+    .sort();
+
+  if (verifierFiles.length === 0) {
+    throw new Error('No verifier keys found. Run yarn compile.');
+  }
+
+  return verifierFiles.map((file) => ({
+    circuitName: file.replace(/\.verifier$/, ''),
+    verifierKey: new Uint8Array(fs.readFileSync(path.join(keysDir, file))),
+  }));
+};
+
+async function main(): Promise<void> {
+  const mnemonic = process.argv.slice(2).join(' ').trim();
+  if (!bip39.validateMnemonic(mnemonic)) {
+    throw new Error('Usage: yarn deploy "<mnemonic>"');
+  }
+
+  const ctx = await initWalletWithSeed(bip39.mnemonicToSeedSync(mnemonic).subarray(0, 32));
+  await ctx.wallet.start(ctx.shieldedSecretKeys, ctx.dustSecretKey);
+  let state = await waitSynced(ctx.wallet);
+
+  const address = MidnightBech32m.encode('undeployed', state.shielded.address).toString();
+  console.log('Wallet:', address);
+
+  let balance = state.shielded.balances[ledger.shieldedToken().raw] ?? 0n;
+  if (balance === 0n) {
+    const end = Date.now() + WAIT_FUNDS_MS;
+    while (balance === 0n && Date.now() < end) {
+      await new Promise((r) => setTimeout(r, POLL_MS));
+      state = await rx.firstValueFrom(ctx.wallet.state());
+      balance = state.shielded.balances[ledger.shieldedToken().raw] ?? 0n;
+    }
+  }
+  if (balance === 0n) throw new Error('Balance is 0. Run yarn fund first.');
+  console.log('Balance:', balance.toString());
+
+  const contractModulePath = path.join(MANAGED_CONTRACT_DIR, 'contract', 'index.js');
+  if (!fs.existsSync(contractModulePath)) {
+    throw new Error('Missing contract bindings. Run yarn compile.');
+  }
+
+  const mod = (await import(pathToFileURL(contractModulePath).href)) as ContractModule;
+  const contract = new mod.Contract(deployWitnesses);
+  const ctor = contract.initialState(
+    createConstructorContext(
+      { agesByClientId: {} },
+      state.shielded.coinPublicKey.toHexString()
+    )
+  );
+  const currentState = ctor.currentContractState;
+
+  const ledgerState = new ledger.ContractState();
+  ledgerState.data = new ledger.ChargedState(
+    ledger.StateValue.decode(currentState.data.state.encode())
+  );
+  ledgerState.balance = new Map();
+
+  for (const { circuitName, verifierKey } of loadVerifierEntries()) {
+    const existingOperation = currentState.operation(circuitName);
+    const operation = existingOperation
+      ? ledger.ContractOperation.deserialize(existingOperation.serialize())
+      : new ledger.ContractOperation();
+    operation.verifierKey = verifierKey;
+    ledgerState.setOperation(circuitName, operation);
+  }
+
+  const deploy = new ledger.ContractDeploy(ledgerState);
+  const tx = ledger.Transaction.fromParts(
+    'undeployed',
+    undefined,
+    undefined,
+    ledger.Intent.new(await getTtl()).addDeploy(deploy)
+  );
+
+  const endDust = Date.now() + WAIT_DUST_MS;
+  let recipe: { type: 'UNPROVEN_TRANSACTION'; transaction: ledger.UnprovenTransaction };
+  while (true) {
     try {
-        const encoded = cs.data.state.encode();
-        ledgerState.data = new ledger.ChargedState(ledger.StateValue.decode(encoded));
-    } catch {
-        // Fallback: minimal state (array with null only)
-        ledgerState.data = new ledger.ChargedState(
-            ledger.StateValue.newArray().arrayPush(ledger.StateValue.newNull())
-        );
+      recipe = await ctx.wallet.balanceUnprovenTransaction(
+        tx,
+        {
+          shieldedSecretKeys: ctx.shieldedSecretKeys,
+          dustSecretKey: ctx.dustSecretKey,
+        },
+        { ttl: await getTtl() }
+      );
+      break;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes('Not enough Dust generated to pay the fee')) throw err;
+      if (Date.now() > endDust) throw new Error('Timed out waiting for dust.');
+      await new Promise((r) => setTimeout(r, POLL_MS));
     }
-    const contractOp = cs.operation('storeMessage');
-    let storeMessageOp: ledger.ContractOperation;
-    if (contractOp) {
-        try {
-            storeMessageOp = ledger.ContractOperation.deserialize(contractOp.serialize());
-        } catch {
-            storeMessageOp = new ledger.ContractOperation();
-        }
-    } else {
-        storeMessageOp = new ledger.ContractOperation();
-    }
-    storeMessageOp.verifierKey = verifierKeyBytes;
-    ledgerState.setOperation('storeMessage', storeMessageOp);
-    ledgerState.balance = new Map();
-    const deploy = new ledger.ContractDeploy(ledgerState);
-    const ttl = new Date(Date.now() + TTL_MS);
-    const intent = ledger.Intent.new(ttl).addDeploy(deploy);
-    const tx = ledger.Transaction.fromParts(NETWORK_ID, undefined, undefined, intent);
+  }
 
-    console.log('Balancing and proving deploy transaction...');
-    const recipe = await wallet.balanceTransaction(shieldedSecretKeys, dustSecretKey, tx, ttl);
+  const signed = await ctx.wallet.signUnprovenTransaction(
+    recipe.transaction,
+    (payload) => ctx.unshieldedKeystore.signData(payload)
+  );
+  const finalized = await ctx.wallet.finalizeTransaction(signed);
+  const txHash = await ctx.wallet.submitTransaction(finalized);
 
-    const unprovenTx =
-        recipe.type === 'TransactionToProve'
-            ? recipe.transaction
-            : recipe.type === 'BalanceTransactionToProve'
-              ? recipe.transactionToProve
-              : recipe.transaction;
+  fs.writeFileSync(
+    path.join(process.cwd(), 'deployment.json'),
+    JSON.stringify(
+      {
+        contractAddress: deploy.address.toString(),
+        deployedAt: new Date().toISOString(),
+        txHash,
+      },
+      null,
+      2
+    )
+  );
 
-    const signSegment = (payload: Uint8Array): ledger.Signature => unshieldedKeystore.signData(payload);
-    const signedTx = await wallet.signTransaction(unprovenTx, signSegment);
+  console.log('Contract:', deploy.address.toString());
+  console.log('Tx:', txHash);
 
-    const recipeToFinalize =
-        recipe.type === 'TransactionToProve'
-            ? { type: 'TransactionToProve' as const, transaction: signedTx }
-            : recipe.type === 'BalanceTransactionToProve'
-              ? { ...recipe, transactionToProve: signedTx }
-              : { ...recipe, transaction: signedTx };
-
-    const finalizedTx = await wallet.finalizeTransaction(recipeToFinalize);
-    let txHash: string;
-    try {
-        txHash = await wallet.submitTransaction(finalizedTx);
-    } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (msg.includes('Custom error: 110') || msg.includes('Invalid Transaction')) {
-            console.error(
-                'The node rejected the deploy transaction (runtime error 110).\n' +
-                'This can mean invalid proof, initial state mismatch, or node/SDK version mismatch.\n' +
-                'Check: node (compose) version vs ledger-v6/proof-server versions; node logs: docker compose logs node'
-            );
-        }
-        throw err;
-    }
-    console.log('Deploy transaction submitted:', txHash);
-
-    const contractAddress = deploy.address.toString();
-    const deploymentJson = path.join(dappDir, 'deployment.json');
-    fs.writeFileSync(
-        deploymentJson,
-        JSON.stringify({ contractAddress, deployedAt: new Date().toISOString(), txHash }, null, 2)
-    );
-    console.log('Contract address:', contractAddress);
-    console.log('Saved to', deploymentJson);
-
-    await wallet.stop();
+  await ctx.wallet.stop();
 }
 
 main().catch((err) => {
-    console.error(err);
-    process.exit(1);
+  console.error(err);
+  process.exit(1);
 });

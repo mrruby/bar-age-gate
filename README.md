@@ -1,248 +1,202 @@
-# Midnight Local Playground
+# Midnight Bar Age-Gate Demo (Local)
 
-A **playground** for writing [Compact](https://docs.midnight.network) contracts and deploying them **locally** on your machine. Use the **Midnight Lace Preview Wallet** on the **“Undeployed”** network to fund your wallet, deploy contracts, and interact with them—without depending on public testnets or faucets.
+Local Midnight demo that showcases zero-knowledge age verification with separate roles:
+- `Client` registers and stores age privately
+- `Client` proves `age >= 18` without revealing exact age
+- `Bartender` sells drinks only when on-chain permit is valid
 
----
+Public chain state stores only:
+- age commitment (`ageCommitment`)
+- adult permit (`adultPermit`)
+- drink counter (`drinksSold`)
 
-## What this repo is for
-
-- **Write** Compact smart contracts (edit the example in `midnight-local-dapp` or add your own).
-- **Run** a full local Midnight network (node, indexer, proof server) via Docker.
-- **Fund** your Lace-derived wallet using a CLI script (no built-in faucet on Undeployed).
-- **Deploy** contracts from the repo root using the **same wallet as Lace** (mnemonic-based).
-- **Interact** with deployed contracts via the Lace wallet UI or a CLI adapted for the local setup.
-
-Ideal for development, workshops, and learning the Compact toolchain and Midnight stack locally.
-
----
+Exact age is stored only in encrypted private state.
 
 ## Prerequisites
 
-- **Git**
-- **Docker** and **Docker Compose v2**
-- **Node.js ≥ 22.16.0** ([nvm](https://github.com/nvm-sh/nvm) recommended)
-- **Yarn** (classic)
-- **Midnight Lace Preview** (v2.36.0 or later) browser extension
+- Node.js `v22.16.0` (from `.nvmrc`)
+- Yarn `1.22.x`
+- Docker + Docker Compose
+- Compact version manager `compact` and compiler `0.28.0`
+- Chrome browser (for Lace Midnight Preview extension)
 
----
-
-## Quick reference: ports
-
-| Service       | Port | Purpose        |
-|---------------|------|----------------|
-| Proof Server  | 6300 | ZK proof generation |
-| Node          | 9944 | RPC / chain   |
-| Indexer       | 8088 | GraphQL API   |
-
----
-
-## Step-by-step setup
-
-All commands below are from the **repository root** unless stated otherwise.
-
-### 1. Clone and install
+Compact setup:
 
 ```bash
-git clone https://github.com/0xshae/midnight-playground.git midnight-playground
-cd midnight-playground
-nvm use 22   # or: nvm install 22 && nvm use 22
+compact --version
+compact update 0.28.0
+compact list
+```
+
+## Install and Configure Lace Midnight Preview
+
+Install the extension:
+1. Open Chrome Web Store:
+   - https://chromewebstore.google.com/detail/lace-beta/hgeekaiplokcnmakghbdfbgnlfheichg
+2. Click **Add to Chrome** and pin the extension.
+3. Open Lace and complete onboarding:
+   - create a new wallet or restore existing wallet
+   - save recovery phrase offline
+
+Configure it for local Docker network:
+1. Open Lace settings and switch to Midnight Preview mode.
+2. Select or add the `Undeployed` local network profile.
+3. Set local endpoints:
+   - Node WS: `ws://127.0.0.1:9944`
+   - Indexer WS: `ws://127.0.0.1:8088/api/v3/graphql/ws`
+   - Proof server: `http://127.0.0.1:6300`
+4. Save settings and reconnect the wallet.
+
+Mnemonic options for this demo:
+- Use an existing Lace mnemonic (create/restore inside Lace).
+- Or leave CLI mnemonic prompt empty and let CLI generate one-time mnemonic.
+- Or generate one from terminal: `yarn mnemonic`.
+- `yarn fund` and `yarn dust` always require an argument (mnemonic or address). Running them without args will fail.
+
+Compatibility reference:
+- https://forum.midnight.network/t/release-announcement-compatibility-v1-0/1020
+
+## Install Dependencies
+
+```bash
 yarn install
 ```
 
-### 2. Start the local network
+## Start Local Network
 
 ```bash
 docker compose up -d
+docker compose ps
 ```
 
-Give it a short time to start (e.g. 30 seconds). The node, indexer, and proof server will be available on the ports above.
+Services:
+- `node` on `9944`
+- `indexer` on `8088`
+- `proof-server` on `6300`
 
-### 3. Connect Lace to “Undeployed”
-
-- In **Lace** → **Settings** → **Midnight**
-- Set network to **“Undeployed”**
-- Save and switch the wallet to that network
-
-Use the same wallet (and mnemonic) for funding and deployment so addresses match.
-
-### 4. Fund your wallet
-
-The Undeployed network has no faucet. Use the included fund script with your **BIP-39 mnemonic** (the one from Lace):
+## Compile + Build
 
 ```bash
-yarn fund "your twelve or twenty four mnemonic words"
-```
-
-This funds both the shielded and unshielded addresses derived from that mnemonic (same derivation as Lace). You can also fund a single address:
-
-```bash
-yarn fund mn_shield-addr_undeployed1...
-yarn fund mn_addr_undeployed1...
-```
-
-### 5. Generate DUST in Lace (required before deploy)
-
-Deploying a contract uses **DUST** for fees. You must have DUST in your Lace wallet on the Undeployed network:
-
-1. Open **Lace** → **Midnight** (Undeployed).
-2. Use the wallet UI to **generate DUST** (follow Lace’s in-app steps).
-3. **Wait for DUST to refill** to the required level.
-
-If you skip this step, `yarn deploy` can fail due to insufficient DUST.
-
-### 6. Deploy the Hello World contract
-
-From the repo root, using the **same mnemonic** as Lace:
-
-```bash
-yarn deploy "your twelve or twenty four mnemonic words"
-```
-
-- Requires a **funded** wallet (`yarn fund` first) and **DUST** (generated in Lace).
-- Deploys the contract from `midnight-local-dapp` (Hello World example).
-- Writes **`midnight-local-dapp/deployment.json`** with `contractAddress` and `txHash`.
-
-You can re-run this after changing the contract (see below).
-
----
-
-## Changing the contract and redeploying
-
-1. **Edit** the Compact source, e.g.  
-   `midnight-local-dapp/contracts/hello-world.compact`
-2. **Recompile** from the dApp directory:
-   ```bash
-   cd midnight-local-dapp
-   yarn compile
-   cd ..
-   ```
-3. **Redeploy** from the repo root:
-   ```bash
-   yarn deploy "your mnemonic"
-   ```
-
-The deploy script is currently wired to the **Hello World** contract and its `storeMessage` entrypoint/verifier. To deploy a different contract or entrypoint, you’d need to point the deploy script at that contract’s path and verifier key (see `src/deploy.ts`).
-
----
-
-## Interacting with the deployed contract
-
-### Option A: CLI (read contract state)
-
-The `midnight-local-dapp` folder includes a CLI that uses the **same wallet derivation as Lace/deploy**, so your address and balance match.
-
-```bash
-cd midnight-local-dapp
-yarn install
+yarn compile
 yarn build
-yarn cli
 ```
 
-Enter your mnemonic when prompted. The CLI can:
-- **Read** the current message stored in the contract
-- **Show** your wallet address and balance (matches Lace)
+This generates artifacts under:
+- `contracts/managed/bar-age-gate`
 
-Example session:
-```
-Hello World Contract CLI (Lace-compatible wallet)
+## Fund and Prepare Wallets
 
-Contract: aa6ce704ee3f482b8675ba1b0f95f9e0dfa8fbcf693800e32f3b5593dbd41688
+Use two wallets (client and bartender). You can use mnemonics from Lace Midnight Preview.
 
-Enter your mnemonic: <your mnemonic>
+Generate a new mnemonic from terminal (optional):
 
-Building wallet (same derivation as Lace)...
-Your wallet address (Lace match): mn_shield-addr_undeployed1r6d...
-Balance: 94011000000
-
---- Menu ---
-1. Read current message
-2. Show wallet info
-3. Exit
+```bash
+yarn mnemonic
 ```
 
-### Option B: Lace wallet UI (store messages)
+Fund each wallet:
 
-To **store a message** in the contract, use a dApp frontend connected to Lace:
-
-1. Build or use a dApp that connects to Lace via the **dapp-connector-api**
-2. Configure it for the **Undeployed** network with local endpoints:
-   - Indexer: `http://127.0.0.1:8088/api/v3/graphql`
-   - Node: `http://127.0.0.1:9944`
-   - Proof server: `http://127.0.0.1:6300`
-3. Point it at the contract address from `midnight-local-dapp/deployment.json`
-4. Call the `storeMessage` circuit through the dApp UI
-
-Lace will use your local node/indexer when connected to Undeployed.
-
-### Why can't the CLI store messages?
-
-Storing a message requires calling the `storeMessage` circuit, which involves:
-- Building a contract call transaction with ZK proofs
-- The proof server generating proofs for the circuit inputs
-
-This is typically handled by a dApp frontend + Lace, which manages the proof generation and transaction signing through the wallet connector. The CLI currently focuses on reading state, which doesn't require proofs.
-
----
-
-## Repo layout (relevant parts)
-
-```
-midnight-playground/
-├── compose.yml          # Docker: node, indexer, proof-server
-├── package.json         # Root scripts: fund, deploy
-├── src/
-│   ├── fund.ts          # Fund shielded/unshielded from mnemonic or address
-│   ├── deploy.ts        # Deploy Hello World using Lace-compatible wallet
-│   └── utils.ts         # Wallet initialization (HD wallet, same derivation as Lace)
-└── midnight-local-dapp/
-    ├── contracts/
-    │   ├── hello-world.compact   # Edit this (or add new contracts)
-    │   └── managed/hello-world/  # Compiled output, keys, contract module
-    ├── deployment.json           # Written by yarn deploy
-    ├── src/
-    │   ├── cli.ts                # CLI for reading contract state
-    │   └── utils.ts              # Wallet utils (same as root)
-    └── package.json              # compile, build, cli scripts
+```bash
+MIDNIGHT_HOST=127.0.0.1 yarn fund "<client mnemonic>"
+MIDNIGHT_HOST=127.0.0.1 yarn fund "<bartender mnemonic>"
 ```
 
----
+If CLI generated mnemonics for you, use them directly:
 
-## Scripts
+```bash
+MIDNIGHT_HOST=127.0.0.1 yarn fund "<generated client mnemonic>"
+MIDNIGHT_HOST=127.0.0.1 yarn fund "<generated bartender mnemonic>"
+```
 
-### Repo root
+You can also fund by address:
 
-| Script                   | Description |
-|--------------------------|-------------|
-| `yarn fund "mnemonic"`   | Fund Lace-derived addresses on Undeployed (or pass a single address). |
-| `yarn deploy "mnemonic"` | Deploy the Hello World contract; requires funded wallet + DUST in Lace. |
+```bash
+MIDNIGHT_HOST=127.0.0.1 yarn fund mn_shield-addr_undeployed...
+MIDNIGHT_HOST=127.0.0.1 yarn fund mn_addr_undeployed...
+```
 
-### midnight-local-dapp
+Register NIGHT UTXOs for dust generation:
 
-| Script        | Description                                |
-|---------------|--------------------------------------------|
-| `yarn compile`| Compile `contracts/hello-world.compact`    |
-| `yarn build`  | Compile TypeScript (`src/` → `dist/`)      |
-| `yarn cli`    | Run the interactive CLI (read contract state, show wallet info) |
+```bash
+MIDNIGHT_HOST=127.0.0.1 yarn dust "<client mnemonic>"
+MIDNIGHT_HOST=127.0.0.1 yarn dust "<bartender mnemonic>"
+```
 
----
+## Deploy Contract
+
+```bash
+MIDNIGHT_HOST=127.0.0.1 yarn deploy "<mnemonic>"
+```
+
+Run deploy from this repo root (`/Users/dawidurbas/Main/mf2`).
+
+Deploy writes `deployment.json` with:
+- `contractAddress`
+- `txHash`
+- `deployedAt`
+
+Quick check:
+
+```bash
+cat deployment.json
+```
+
+## Run CLI
+
+```bash
+MIDNIGHT_HOST=127.0.0.1 yarn cli
+```
+
+Startup behavior:
+- CLI asks for client mnemonic and bartender mnemonic.
+- If input is empty, CLI generates a mnemonic and prints it once.
+- Generated mnemonics are not stored in files.
+
+Menu:
+1. `Register client (client wallet)`
+2. `Prove adult (client wallet)`
+3. `Sell drink (bartender wallet)`
+4. `Exit`
+
+Important:
+- `Sell drink` succeeds only after `Prove adult` has succeeded for that client.
+- Registering an adult client does not automatically mark them as verified.
+
+## End-to-End Demo Flow
+
+1. Register under-18 client (for example age `17`) -> registration succeeds.
+2. Try `Prove adult` for that client -> rejected.
+3. Bartender `Sell drink` for that client -> `SALE_REJECTED`.
+4. Register adult client (for example age `22`) -> registration succeeds.
+5. If bartender tries `Sell drink` now -> still `SALE_REJECTED` (not verified yet).
+6. Run `Prove adult` for that adult client -> succeeds.
+7. Bartender `Sell drink` again -> `SALE_APPROVED` and `drinksSold` increments.
+
+## Privacy Model
+
+- Real age is stored in encrypted private state maintained by the client wallet flow.
+- Contract stores only commitment/permit/counter on chain.
+- Bartender never sees exact age.
+- Sale path always enforces adult permit on-chain.
+
+## Stop Local Network
+
+```bash
+docker compose down
+```
 
 ## Troubleshooting
 
-- **“Balance is still 0”**  
-  Run `yarn fund "your mnemonic"` and ensure the local network is up (`docker compose up -d`).
-
-- **Deploy fails (e.g. insufficient DUST)**  
-  In Lace (Undeployed), generate DUST and wait for it to refill, then run `yarn deploy` again.
-
-- **“Invalid Transaction: Custom error: 110”**  
-  The node rejected the deploy (e.g. verifier key or proof issue). Check `docker compose logs node` and ensure node/image versions in `compose.yml` match the ledger-v6 and proof-server versions used by this repo.
-
-- **“Command 'fund' not found”**  
-  Run `yarn install` from the repo root so the `fund` script is available.
-
----
-
-## References
-
-- [Midnight Docs – Interact with an MN app](https://docs.midnight.network/getting-started/interact-with-mn-app) (Testnet CLI flow; adapt endpoints and network for local Undeployed).
-- [Compact](https://docs.midnight.network) – Midnight’s smart contract language and toolchain.
+- `Not enough Dust generated to pay the fee`:
+  - run `yarn dust` again and wait for non-zero dust balance.
+- `No deployment.json found`:
+  - run `yarn deploy` first.
+- CLI shows a different contract address than your latest deploy:
+  - you are likely in a different directory or using stale `deployment.json`.
+  - run `cat deployment.json` in `/Users/dawidurbas/Main/mf2` and confirm it matches latest deploy output.
+- `Contract bindings not found`:
+  - run `yarn compile`.
+- Wallet sync timeout:
+  - verify Docker services are healthy and `MIDNIGHT_HOST=127.0.0.1` is set.
+- Adult client still gets `SALE_REJECTED`:
+  - run menu option `2` (`Prove adult`) for that client before menu option `3` (`Sell drink`).

@@ -1,16 +1,4 @@
-// This file is part of midnight-playground.
-// Copyright (C) 2025 Shagun Prasad
-// SPDX-License-Identifier: Apache-2.0
-// Licensed under the Apache License, Version 2.0 (the "License");
-// You may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-// http://www.apache.org/licenses/LICENSE-2.0
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-import * as ledger from '@midnight-ntwrk/ledger-v6';
+import * as ledger from '@midnight-ntwrk/ledger-v7';
 import type { DefaultV1Configuration as DustConfiguration } from '@midnight-ntwrk/wallet-sdk-dust-wallet';
 import { DustWallet } from '@midnight-ntwrk/wallet-sdk-dust-wallet';
 import { WalletFacade } from '@midnight-ntwrk/wallet-sdk-facade';
@@ -24,23 +12,41 @@ import {
     type UnshieldedKeystore,
     UnshieldedWallet,
 } from '@midnight-ntwrk/wallet-sdk-unshielded-wallet';
-import { Buffer } from 'buffer';
 
 const INDEXER_PORT = Number.parseInt(process.env['INDEXER_PORT'] ?? '8088', 10);
 const NODE_PORT = Number.parseInt(process.env['NODE_PORT'] ?? '9944', 10);
 const PROOF_SERVER_PORT = Number.parseInt(process.env['PROOF_SERVER_PORT'] ?? '6300', 10);
+const MIDNIGHT_HOST = process.env['MIDNIGHT_HOST'] ?? '127.0.0.1';
 
-const INDEXER_HTTP_URL = `http://localhost:${INDEXER_PORT}/api/v3/graphql`;
-const INDEXER_WS_URL = `ws://localhost:${INDEXER_PORT}/api/v3/graphql/ws`;
+const INDEXER_HTTP_URL = `http://${MIDNIGHT_HOST}:${INDEXER_PORT}/api/v3/graphql`;
+const INDEXER_WS_URL = `ws://${MIDNIGHT_HOST}:${INDEXER_PORT}/api/v3/graphql/ws`;
+
+const FEE_OVERHEAD = (() => {
+    const raw = process.env['FEE_OVERHEAD'] ?? '300000000000000';
+    try {
+        return BigInt(raw);
+    } catch {
+        throw new Error(`Invalid FEE_OVERHEAD value: ${raw}`);
+    }
+})();
+
+const FEE_BLOCKS_MARGIN = (() => {
+    const raw = process.env['FEE_BLOCKS_MARGIN'] ?? '5';
+    const parsed = Number.parseInt(raw, 10);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+        throw new Error(`Invalid FEE_BLOCKS_MARGIN value: ${raw}`);
+    }
+    return parsed;
+})();
 
 const configuration: ShieldedConfiguration & DustConfiguration & { indexerUrl: string } = {
     networkId: 'undeployed',
     costParameters: {
-        additionalFeeOverhead: 300_000_000_000_000_000n,
-        feeBlocksMargin: 5,
+        additionalFeeOverhead: FEE_OVERHEAD,
+        feeBlocksMargin: FEE_BLOCKS_MARGIN,
     },
-    relayURL: new URL(`ws://localhost:${NODE_PORT}`),
-    provingServerUrl: new URL(`http://localhost:${PROOF_SERVER_PORT}`),
+    relayURL: new URL(`ws://${MIDNIGHT_HOST}:${NODE_PORT}`),
+    provingServerUrl: new URL(`http://${MIDNIGHT_HOST}:${PROOF_SERVER_PORT}`),
     indexerClientConnection: {
         indexerHttpUrl: INDEXER_HTTP_URL,
         indexerWsUrl: INDEXER_WS_URL,

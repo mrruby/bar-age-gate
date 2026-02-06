@@ -1,209 +1,129 @@
-// Copyright 2025 Shagun Prasad
-// SPDX-License-Identifier: Apache-2.0
-
-import pino from 'pino';
-import pinoPretty from 'pino-pretty';
-import {initWalletWithSeed} from "./utils";
-import {MidnightBech32m} from '@midnight-ntwrk/wallet-sdk-address-format';
-import * as rx from 'rxjs';
-import * as ledger from '@midnight-ntwrk/ledger-v6';
 import * as bip39 from 'bip39';
-import {CombinedTokenTransfer} from "@midnight-ntwrk/wallet-sdk-facade";
+import * as rx from 'rxjs';
+import * as ledger from '@midnight-ntwrk/ledger-v7';
+import { MidnightBech32m } from '@midnight-ntwrk/wallet-sdk-address-format';
+import { CombinedTokenTransfer } from '@midnight-ntwrk/wallet-sdk-facade';
+import { initWalletWithSeed } from './utils';
 
-const DEFAULT_LOG_LEVEL = process.env.LOG_LEVEL ?? 'info';
-const TRANSFER_AMOUNT = 31_337_000_000n; // 1e12, adjust as needed
+const AMOUNT = 31_337_000_000n;
+const TTL_MS = 30 * 60 * 1000;
 
-interface CliInput {
-    mnemonic?: string;
-    shieldedAddress?: string;
-    unshieldedAddress?: string;
-}
+type Receiver = { shielded?: string; unshielded?: string };
 
-function getReceiverMnemonicsFromArgs(): CliInput {
-    const [, , arg] = process.argv;
+const parseReceiver = (arg: string): Receiver => {
+  if (bip39.validateMnemonic(arg)) {
+    return { shielded: '', unshielded: '' };
+  }
+  if (arg.startsWith('mn_shield-addr_undeployed')) {
+    return { shielded: arg };
+  }
+  if (arg.startsWith('mn_addr_undeployed')) {
+    return { unshielded: arg };
+  }
+  throw new Error(
+    'Usage: yarn fund "<mnemonic>" | yarn fund mn_shield-addr_undeployed... | yarn fund mn_addr_undeployed...'
+  );
+};
 
-    const printUsage = () => {
-        console.error(`
-Usage:
-  yarn fund "<mnemonic words>"
-  yarn fund mn_shield-addr_undeployed...
-  yarn fund mn_unshield-addr_undeployed...
-
-Accepted inputs:
-  • BIP-39 mnemonic (space-separated words)
-  • Shielded address for the 'undeployed' network
-  • Unshielded address for the 'undeployed' network
-
-Examples:
-  yarn fund "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
-  yarn fund mn_shield-addr_undeployed1...
-  yarn fund mn_unshield-addr_undeployed1...
-`);
-    };
-
-    if (!arg) {
-        console.error('No argument provided.');
-        printUsage();
-        process.exit(2);
-    }
-
-    // ---- mnemonic ----------------------------------------------------------
-    if (bip39.validateMnemonic(arg)) {
-        return { mnemonic: arg };
-    }
-
-    // ---- address handling --------------------------------------------------
-    const isShielded = arg.startsWith('mn_shield-addr');
-    const isUnshielded = arg.startsWith('mn_addr_');
-
-    if (isShielded || isUnshielded) {
-        const expectedPrefix = isShielded
-            ? 'mn_shield-addr_undeployed'
-            : 'mn_addr_undeployed';
-
-        if (!arg.startsWith(expectedPrefix)) {
-            const providedNetwork = arg
-                .replace(isShielded ? 'mn_shield-addr_' : 'mn_addr_', '')
-                .split('1')[0]; // best-effort extraction
-
-            console.error(
-                `Unsupported network in address: '${providedNetwork}'.\n` +
-                `This script supports ONLY the 'undeployed' network.\n` +
-                `Expected prefix:\n  ${expectedPrefix}...`
-            );
-            process.exit(2);
-        }
-
-        return isShielded
-            ? { shieldedAddress: arg }
-            : { unshieldedAddress: arg };
-    }
-
-    // ---- fallback ----------------------------------------------------------
-    console.error(
-        `Invalid argument provided.\n\n` +
-        `Received:\n  ${arg.slice(0, 60)}${arg.length > 60 ? '...' : ''}`
-    );
-    printUsage();
-    process.exit(2);
-}
-
-
-function createLogger() {
-    const pretty = pinoPretty({
-        colorize: true,
-        sync: true,
-    });
-
-    return pino(
-        {
-            level: DEFAULT_LOG_LEVEL,
-        },
-        pretty,
-    );
-}
-
-interface Stoppable {
-    stop(): Promise<void>;
-}
+const waitSynced = async (
+  obs: ReturnType<Awaited<ReturnType<typeof initWalletWithSeed>>['wallet']['state']>
+)=> rx.firstValueFrom(obs.pipe(rx.filter((s) => s.isSynced)));
 
 async function main(): Promise<void> {
-    const logger = createLogger();
-    let cliInput = getReceiverMnemonicsFromArgs();
-    let stoppable : Stoppable[] = []
-    if (cliInput.mnemonic) {
-        const seed: Buffer = await bip39.mnemonicToSeed(cliInput.mnemonic);
-        // To match Lace Wallet derivation, we take the first 32 bytes of the seed
-        // This is unclear from BIP-39, but is what makes this interoperable with Lace
-        const takeSeed = seed.subarray(0, 32);
-        const receiver = await initWalletWithSeed(takeSeed);
-        stoppable.push(receiver.wallet);
-        const shieldedAddress: string = await rx.firstValueFrom(
-            receiver.wallet.state().pipe(
-                rx.filter((s) => s.isSynced),
-                rx.map((s) => MidnightBech32m.encode('undeployed', s.shielded.address).toString()),
-            ),
-        );
-        const unshieldedAddress: string = receiver.unshieldedKeystore.getBech32Address().toString();
-        cliInput.shieldedAddress = shieldedAddress;
-        cliInput.unshieldedAddress = unshieldedAddress;
-        logger.info({ shieldedAddress, unshieldedAddress }, 'Derived receiver addresses from mnemonic');
-    }
+  const arg = process.argv.slice(2).join(' ').trim();
+  if (!arg) {
+    throw new Error(
+      'Missing receiver argument.\n' +
+      'Generate mnemonic: yarn mnemonic\n' +
+      'Usage: yarn fund "<mnemonic>" | yarn fund mn_shield-addr_undeployed... | yarn fund mn_addr_undeployed...'
+    );
+  }
 
-    try {
-        const genesisWalletSeed = Buffer.from('0000000000000000000000000000000000000000000000000000000000000001', 'hex');
-        const sender = await initWalletWithSeed(genesisWalletSeed);
-        await rx.firstValueFrom(sender.wallet.state().pipe(rx.filter((s) => s.isSynced)));
-        stoppable.push(sender.wallet);
+  const parsed = parseReceiver(arg);
+  const receiver: Receiver = { ...parsed };
 
-        logger.info('Wallet setup complete');
+  let receiverWallet:
+    | Awaited<ReturnType<typeof initWalletWithSeed>>
+    | undefined;
 
-        const outputs: CombinedTokenTransfer[] = [];
-        if (cliInput.unshieldedAddress) outputs.push(
-            {
-                type: 'unshielded',
-                outputs: [
-                    {
-                        amount: TRANSFER_AMOUNT,
-                        receiverAddress: cliInput.unshieldedAddress,
-                        type: ledger.unshieldedToken().raw,
-                    },
-                ],
-            }
-        );
+  if (bip39.validateMnemonic(arg)) {
+    receiverWallet = await initWalletWithSeed(
+      bip39.mnemonicToSeedSync(arg).subarray(0, 32)
+    );
+    await receiverWallet.wallet.start(
+      receiverWallet.shieldedSecretKeys,
+      receiverWallet.dustSecretKey
+    );
+    const receiverState = await waitSynced(receiverWallet.wallet.state());
+    receiver.shielded = MidnightBech32m.encode(
+      'undeployed',
+      receiverState.shielded.address
+    ).toString();
+    receiver.unshielded = receiverWallet.unshieldedKeystore
+      .getBech32Address()
+      .toString();
+  }
 
-        if (cliInput.shieldedAddress) outputs.push({
-            type: 'shielded',
-            outputs: [
-                {
-                    amount: TRANSFER_AMOUNT,
-                    receiverAddress: cliInput.shieldedAddress,
-                    type: ledger.shieldedToken().raw,
-                },
-            ],
-        });
+  const sender = await initWalletWithSeed(
+    Buffer.from(
+      '0000000000000000000000000000000000000000000000000000000000000001',
+      'hex'
+    )
+  );
+  await sender.wallet.start(sender.shieldedSecretKeys, sender.dustSecretKey);
+  await waitSynced(sender.wallet.state());
 
+  const outputs: CombinedTokenTransfer[] = [];
+  if (receiver.unshielded) {
+    outputs.push({
+      type: 'unshielded',
+      outputs: [
+        {
+          amount: AMOUNT,
+          receiverAddress: receiver.unshielded,
+          type: ledger.unshieldedToken().raw,
+        },
+      ],
+    });
+  }
+  if (receiver.shielded) {
+    outputs.push({
+      type: 'shielded',
+      outputs: [
+        {
+          amount: AMOUNT,
+          receiverAddress: receiver.shielded,
+          type: ledger.shieldedToken().raw,
+        },
+      ],
+    });
+  }
+  if (!outputs.length) throw new Error('No receiver resolved.');
 
-        const recipe = await sender.wallet.transferTransaction(
-            sender.shieldedSecretKeys,
-            sender.dustSecretKey,
-            outputs,
-            new Date(Date.now() + 30 * 60 * 1000),
-        );
+  const recipe = await sender.wallet.transferTransaction(
+    outputs,
+    {
+      shieldedSecretKeys: sender.shieldedSecretKeys,
+      dustSecretKey: sender.dustSecretKey,
+    },
+    { ttl: new Date(Date.now() + TTL_MS), payFees: true }
+  );
+  const signed = await sender.wallet.signUnprovenTransaction(
+    recipe.transaction,
+    (payload) => sender.unshieldedKeystore.signData(payload)
+  );
+  const finalized = await sender.wallet.finalizeTransaction(signed);
+  const txHash = await sender.wallet.submitTransaction(finalized);
 
-        const tx = await sender.wallet
-            .signTransaction(recipe.transaction, (payload) => sender.unshieldedKeystore.signData(payload))
+  console.log('Submitted:', txHash);
+  if (receiver.unshielded) console.log('Unshielded:', receiver.unshielded);
+  if (receiver.shielded) console.log('Shielded:', receiver.shielded);
 
-        logger.info(
-            'Transfer recipe created',
-        );
-
-        const transaction = await sender.wallet
-            .finalizeTransaction({ type: 'TransactionToProve', transaction: tx });
-
-        logger.info('Transaction proof generated');
-
-        const txHash = await sender.wallet.submitTransaction(transaction);
-        logger.info({ txHash }, 'Transaction submitted');
-
-    } catch (err) {
-        logger.error(
-            { err },
-            'Error while preparing/submitting transfer transaction',
-        );
-        // Non-zero exit for CI or scripts
-        process.exitCode = 1;
-    } finally {
-        for (const wallet of stoppable) {
-            if (wallet) {
-                await wallet.stop();
-            }
-        }
-    }
+  await sender.wallet.stop();
+  if (receiverWallet) await receiverWallet.wallet.stop();
 }
 
 main().catch((err) => {
-    // Fallback if something happens before logger is available
-    console.error('Unhandled error in main:', err);
-    process.exit(1);
+  console.error(err);
+  process.exit(1);
 });
