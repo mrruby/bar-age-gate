@@ -1,0 +1,25 @@
+diff --git a/node_modules/@midnight-ntwrk/compact-runtime/dist/constructor-context.d.ts b/node_modules/@midnight-ntwrk/compact-runtime/dist/constructor-context.d.ts
+index 04a2b4c..d1014c2 100644
+--- a/node_modules/@midnight-ntwrk/compact-runtime/dist/constructor-context.d.ts
++++ b/node_modules/@midnight-ntwrk/compact-runtime/dist/constructor-context.d.ts
+@@ -20,6 +20,8 @@ export interface ConstructorContext<PS = any> {
+  * @param coinPublicKey The Zswap coin public key of the user executing the contract.
+  */
+ export declare const createConstructorContext: <PS>(initialPrivateState: PS, coinPublicKey: ocrt.CoinPublicKey | EncodedCoinPublicKey) => ConstructorContext<PS>;
++/** @deprecated Use createConstructorContext. Alias for midnight-js-contracts compatibility. */
++export declare const constructorContext: typeof createConstructorContext;
+ /**
+  * The result of executing a contract constructor.
+  */
+diff --git a/node_modules/@midnight-ntwrk/compact-runtime/dist/constructor-context.js b/node_modules/@midnight-ntwrk/compact-runtime/dist/constructor-context.js
+index 909f139..0f7ede4 100644
+--- a/node_modules/@midnight-ntwrk/compact-runtime/dist/constructor-context.js
++++ b/node_modules/@midnight-ntwrk/compact-runtime/dist/constructor-context.js
+@@ -23,4 +23,6 @@ export const createConstructorContext = (initialPrivateState, coinPublicKey) =>
+     initialPrivateState,
+     initialZswapLocalState: emptyZswapLocalState(coinPublicKey),
+ });
++/** @deprecated Use createConstructorContext. Alias for midnight-js-contracts compatibility. */
++export const constructorContext = createConstructorContext;
+ //# sourceMappingURL=constructor-context.js.map
+\ No newline at end of file

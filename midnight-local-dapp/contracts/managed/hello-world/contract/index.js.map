@@ -1,0 +1,8 @@
+{
+  "version": 3,
+  "file": "index.js",
+  "sourceRoot": "../../../../",
+  "sources": ["contracts/hello-world.compact"],
+  "names": [],
+  "mappings": ";;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;EAAA;;;;;;;;;;MAIA,AAAA,YAEC;;;;;cAF2B,eAA+B;;;;;;;;;;;yCAA/B,eAA+B;;;;;;;;;8CAA/B,eAA+B;;;OAE1D;;;GAAC;EANF;;;;;;;;;;;;;;;;;;;;;;;;;;IAEA;;;;;;;;;yEAAwC;;;;;;;GAItC;EAFF,AAAA,eAEC,4BAF2B,eAA+B;IACzD;;;;;;;2HAAmB,eAAa;;yEAAzB;;GACR;;;;;;;;;;;;;;;;IAJD;qCAAA;;;;;;;;;;;0GAAwC;KAAA;;;;;;;;;;"
+}
