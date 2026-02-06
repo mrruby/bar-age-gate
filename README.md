@@ -186,6 +186,19 @@ Important:
 - Bartender never sees exact age.
 - Sale path always enforces adult permit on-chain.
 
+## Attribution / References
+
+This repository includes examples and guidance based on the following open-source resources:
+
+- **Your First Midnight Smart Contract** tutorial by *0xshae* (gist):
+  - https://gist.github.com/0xshae/efa84c69764da1252a13ec74b79957e0
+- **Midnight Playground (Apache-2.0)** by *0xshae* (Compact playground/tooling reference):
+  - https://github.com/0xshae/midnight-playground
+- **Midnight example-counter** (official Midnight Network example):
+  - https://github.com/midnightntwrk/example-counter
+
+These resources are used for educational reference and inspiration for this demo.
+
 ## Stop Local Network
 
 ```bash
